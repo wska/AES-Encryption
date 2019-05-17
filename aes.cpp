@@ -2,11 +2,9 @@
 /*
 AES 128 bit encryption
 @author William Skagerström
-Last modified: 2019-05-15
+Last modified: 2019-05-17
 */
 
-
-// AES Irreducible polynomial: p(x) = x^8 + x^4 + x^3 + x + 1
 
 #include <iostream>
 #include <cstring>
@@ -14,19 +12,18 @@ Last modified: 2019-05-15
 #include <sstream>
 #include "tables.h"
 #include "unistd.h"
+#include "utility.h"
 
 using namespace std;
 
-
-
-
-
-void blockXOR(unsigned char * block, unsigned char * key){
-    for (int i = 0; i<16; i++){
+// XOR of a 128 bit block with a 128 bit key.
+void addRoundKey(unsigned char * block, unsigned char * key){
+    for(int i=0; i<16; i++){
         block[i] ^= key[i];
     }
 }
 
+// Byte substituion
 void byteSubstitution(unsigned char * block){
     for (int i = 0; i<16; i++){
         block[i] = sbox[block[i]];
@@ -39,10 +36,10 @@ void shiftRows(unsigned char * block){
     /*
     Shifts the rows of the keyblock according to the specifiation below:
 
-    0  4   8 12         0  4  8 11
-    1  5   9 13   =>    5  9 13  1
-    2  6  10 14        19 14  2  6
-    3  7  11 15        15  3  7 11
+    0  4   8 12   =>     0  4  8 11
+    1  5   9 13   =>     5  9 13  1
+    2  6  10 14   =>    19 14  2  6
+    3  7  11 15   =>    15  3  7 11
     */
 
     unsigned char shiftedRows[16];
@@ -90,6 +87,8 @@ void mixOneColumn(unsigned char * r){
         b[c] ^= 0x1b & h;
     }
 
+    // AES Irreducible polynomial: p(x) = x^8 + x^4 + x^3 + x + 1
+
     /* 
     Multiplication in GS(2^8)
     2*a0 + 3*a1 + 1*a2 + 1*a3
@@ -110,81 +109,40 @@ void mixOneColumn(unsigned char * r){
 
 void mixColumns(unsigned char * block){
 
-    
-    unsigned char mixColumns[16];
+    unsigned char mixCols[16];
 
     unsigned char temp[4]; // Temporary variable for a single column
 
+    // Transponents the block in order to multiply directly to the GS(2^8) matrix.
     for(int j=0; j<4; j++){
-        temp[0] = block[j];
-        temp[1] = block[j+4];
-        temp[2] = block[j+8];
-        temp[3] = block[j+12];
+        temp[0] = block[j*4];
+        temp[1] = block[j*4+1];
+        temp[2] = block[j*4+2];
+        temp[3] = block[j*4+3];
 
         mixOneColumn(temp);
 
-        mixColumns[j] = temp[0];
-        mixColumns[j+4] = temp[1];
-        mixColumns[j+8] = temp[2];
-        mixColumns[j+12] = temp[3];
-
-
+        mixCols[j] = temp[0];
+        mixCols[j+4] = temp[1];
+        mixCols[j+8] = temp[2];
+        mixCols[j+12] = temp[3];
     }
     
-    /*
-    temp[0] = mixColumns[0];
-    temp[1] = mixColumns[4];
-    temp[2] = mixColumns[8];
-    temp[3] = mixColumns[12];
-    
-    mixColumns[1] = 1;
-    mixColumns[5] = 1;
-    mixColumns[9] = 1;
-    mixColumns[13] = 1;
 
-    mixColumns[2] = 1;
-    mixColumns[6] = 1;
-    mixColumns[10] = 1;
-    mixColumns[14] = 1;
-
-    mixColumns[3] = 1;
-    mixColumns[7] = 1;
-    mixColumns[11] = 1;
-    mixColumns[15] = 1;
-    */
-    
-
-    for (int i = 0; i < 16; i++) {
-		block[i] = mixColumns[i];
+    // Undoes the transponent.
+    for (int i = 0; i < 4; i++) {
+		block[i*4] = mixCols[i];
+        block[i*4+1] = mixCols[i + 4];
+        block[i*4+2] = mixCols[i + 8];
+        block[i*4+3] = mixCols[i + 12];
 	}
-
-
 }
 
-// Print function used for debugging.
-// Given a matrix @matrix, prints @bytes number of bytes as rows of 4.
-void printMatrix(unsigned char * matrix, int bytes){
-    for(int i=0; i<bytes; i++){
-        if(i%4 == 0){
-            cout << endl;
-        }
-        cout << hex << int(matrix[i]) << " ";
-        
-
-    }
-    cout << endl;
-}
-
-// XOR of a 128 bit block with a 128 bit key.
-void addRoundKey(unsigned char * block, unsigned char * key){
-    for(int i=0; i<16; i++){
-        block[i] ^= key[i];
-    }
-}
 
 
 // One round of the 128-bit AES.
 void encRound(unsigned char * block, unsigned char * key){
+
     byteSubstitution(block);
     shiftRows(block);
     mixColumns(block);
@@ -193,6 +151,7 @@ void encRound(unsigned char * block, unsigned char * key){
 
 // Final round does not execute the mixColumns operation.
 void lastRound(unsigned char * block, unsigned char * key){
+   
     byteSubstitution(block);
     shiftRows(block);
     addRoundKey(block, key);
@@ -220,54 +179,32 @@ void expandKeyShift(unsigned char * word, int roundIteration){
 // Function for generating the additional 10 subkeys, for 11 in total.
 void expandKey(unsigned char * originalKey, unsigned char * expandedKey){
 
-    // originalKey = 16 bytes. expandedKey = 16*11 = 176 bytes.
+    // originalKey = 16 bytes. 10 subkeys at 16 bytes each. expandedKey = 16*11 = 176 bytes.
     for(int i=0; i<16; i++){
         expandedKey[i] = originalKey[i];
     }
 
     unsigned char word[4];
 
+    int rcon = 1; // Keeps track of which entry in the RCON matrix to use.
     
-    int bytesgenerated = 16;
-    int rcon = 1;
-    
-    while(bytesgenerated < 176){
+    for(int bytesProcessed = 16; bytesProcessed < 176; bytesProcessed+=4){
         for (int i = 0; i<4; i++){
-            word[i] = expandedKey[i + bytesgenerated - 4];
+            word[i] = expandedKey[i + bytesProcessed - 4];
         }
 
-        if(bytesgenerated % 16 == 0){
+        if(bytesProcessed % 16 == 0){
             expandKeyShift(word, rcon);
             rcon++;
         }
 
         for (int a = 0; a<4; a++){
-            expandedKey[bytesgenerated + a] = expandedKey[bytesgenerated-16 + a] ^ word[a];
+            expandedKey[bytesProcessed + a] = expandedKey[bytesProcessed-16 + a] ^ word[a];
             
         }
-        bytesgenerated = bytesgenerated + 4;
+        
     }
     
-    /*
-    for (int roundIteration = 1; roundIteration<44; roundIteration++){
-
-        for (int k = 0; k<4; k++){
-            word[k] = expandedKey[k + roundIteration*4 - 4];
-        }
-
-
-        expandKeyShift(word, roundIteration);
-        
-        for (int j=0; j<4; j++){
-            expandedKey[roundIteration*16 + j] = expandedKey[roundIteration*4 + j - 16] ^ word[j];
-        }
-
-    }*/
-    
-    
-
-
-
 }
 
 // Main encryption function
@@ -282,118 +219,40 @@ void encrypt(unsigned char * message, unsigned char * expandedKey, unsigned char
     addRoundKey(block, expandedKey);
 
     // 9 normal rounds
-    for(int i=0; i<9; i++){
-        encRound(block, expandedKey);
+    for(int i=1; i<10; i++){
+        encRound(block, expandedKey+(16*i)); // Also increments the pointer to the location of the roundkey needed
     }
 
     // Last round without the mixcolumns
-    lastRound(block, expandedKey);
+    lastRound(block, expandedKey+(16*10)); // Last round is round 10, so increment by 16 bytes*10 to put the pointer at the final key.
 
     
     for(int i=0; i<16; i++){
         encryptedMessage[i] = block[i];
     }
-    
-
 }
+
+
 
 int main(){
 
-    //unsigned char key[16];
-    //read(0, key, sizeof(key)); // Reads 16 bytes into key from stdin
-
-
+    unsigned char key[16];
+    read(0, key, sizeof(key)); // Reads 16 bytes into key from stdin
    
-    unsigned char key[16] = {0x54, 0x68, 0x61, 0x74, 0x73, 0x20, 0x6d, 0x79, 0x20, 0x4b, 0x75, 0x6e, 0x67, 0x20, 0x46, 0x75};
-    unsigned char block[16] = {0x54, 0x77, 0x6F, 0x20, 0x4F, 0x6E, 0x65, 0x20, 0x4E, 0x69, 0x6E, 0x65, 0x20, 0x54, 0x77, 0x6F};
-    
-    /*
-    unsigned char test[16] = {
-                              0x54,    0x68,      0x61,      0x74,
-                              0x73,    0x20,      0x6d,      0x79,
-                              0x20,    0x4b,     0x75,     0x6e,
-                              0x67,    0x20,     0x46,     0x75
-                             };
-    */
-    //mixColumns(test);
-    //printMatrix(test, 16);
-
     // Creates the expanded key.
     unsigned char expandedKey[176];
     expandKey(key, expandedKey);
 
-    for (int i=0; i<176; i++){
-        if (i%16 == 0 && i!=0){
-            cout << endl;
-        }
-    cout << hex << (int) expandedKey[i] << " ";
-  
-    }
-    cout << endl;
+    unsigned char encryptedMessage[16]; // Memory segment where the encrypted message is written to
+    unsigned char block[16]; // Stores the block to be encrypted
     
-
-
-    unsigned char encryptedMessage[16];
-
-    //unsigned char block[16];
-
-    
-
-    /*
+    // While there is input, take a block of 16 bytes and encrypt it using AES and extended key derived from the original key. 
     while(read(0, block, 16)){
+       encrypt(block, expandedKey, encryptedMessage);
+        writeRawBytes(encryptedMessage, 16);
 
-        
-        //for(int i = 0; i<16; i++){
-        //    cout << hex << (int) block[i];
-        //}
-
-        cout << endl;
-        encrypt(block, expandedKey, encryptedMessage);
-
-
-        for(int i = 0; i<16; i++){
-            cout << hex << (int) encryptedMessage[i];
-        }
     }
-    */
-
-    //unsigned char expandedKey[176];
-    //unsigned char test2[4] = {test[12], test[13], test[14], test[15]};
-
-    /*
-    cout << hex << int(test2[0]) << endl;
-    cout << hex << int(test2[1]) << endl;
-    cout << hex << int(test2[2]) << endl;
-    cout << hex << int(test2[3]) << endl;
-    cout << endl;
-
-    expandKeyShift(test2, 1);
-
-    cout << hex << int(test2[0]) << endl;
-    cout << hex << int(test2[1]) << endl;
-    cout << hex << int(test2[2]) << endl;
-    cout << hex << int(test2[3]) << endl;
-    */
-    /*
-    expandKey(test, expandedKey);
-    cout << hex << int(expandedKey[16]) << endl;
-    cout << hex << int(expandedKey[17]) << endl;
-    cout << hex << int(expandedKey[18]) << endl;
-    cout << hex << int(expandedKey[19]) << endl;
-    */
-
-
-    /*
-    unsigned char r[4] = {0xf2, 0x0a, 0x22, 0x5c};
-    mixOneColumn(r);
-    cout << hex << int(r[0])<< endl;
-    cout << hex << int(r[1])<< endl;
-    cout << hex << int(r[2])<< endl;
-    cout << hex << int(r[3])<< endl;
-    */
-   
-
-
+    
 }
 
 
