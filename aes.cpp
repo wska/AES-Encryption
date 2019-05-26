@@ -237,7 +237,7 @@ void encrypt(unsigned char * message, unsigned char * expandedKey, unsigned char
 int main(){
 
     unsigned char key[16];
-    read(0, key, sizeof(key)); // Reads 16 bytes into key from stdin
+    int errorCode = read(0, key, sizeof(key)); // Reads 16 bytes into key from stdin
    
     // Creates the expanded key.
     unsigned char expandedKey[176];
